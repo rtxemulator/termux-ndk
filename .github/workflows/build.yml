@@ -89,6 +89,46 @@ jobs:
           echo "Actual:   ${ACTUAL_REVISION}"
           test "${ACTUAL_REVISION}" = "${LLVM_SOURCE_REVISION}"
 
+      - name: Patch LLVM build-time host tool wiring
+        run: |
+          set -euxo pipefail
+
+          TOOLING_CMAKE="llvm-project/clang/lib/Tooling/CMakeLists.txt"
+
+          test -f "${TOOLING_CMAKE}"
+
+          # r28c's LLVM base revision predates the later CLANG_AST_DUMP host-tool
+          # wiring. During a cross-build, clang-ast-dump is a build-time program
+          # and must run on the x86_64 GitHub runner, not be executed as an
+          # AArch64 Android binary.
+          python3 - "${TOOLING_CMAKE}" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          text = p.read_text()
+
+          pattern = r"COMMAND\s+\$<TARGET_FILE:clang-ast-dump>"
+          replacement = "COMMAND\n      ${LLVM_NATIVE_TOOL_DIR}/clang-ast-dump"
+
+          patched, count = re.subn(pattern, replacement, text, count=1)
+          if count == 0:
+              if "${LLVM_NATIVE_TOOL_DIR}/clang-ast-dump" in text:
+                  print("Host clang-ast-dump wiring already present.")
+              else:
+                  raise SystemExit(
+                      "ERROR: expected clang-ast-dump command was not found; "
+                      "refusing to guess."
+                  )
+          else:
+              p.write_text(patched)
+              print("Applied host clang-ast-dump wiring patch.")
+          PY
+
+          grep -n -A8 -B4 'LLVM_NATIVE_TOOL_DIR}/clang-ast-dump' \
+            "${TOOLING_CMAKE}"
+
       - name: Build native LLVM host tools
         run: |
           set -euxo pipefail
@@ -194,10 +234,11 @@ jobs:
           grep -E '^(LLVM_TABLEGEN|CLANG_TABLEGEN|LLVM_NATIVE_TOOL_DIR|LLVM_USE_HOST_TOOLS):' \
             CMakeCache.txt || true
 
-      - name: Build LLVM
+      - name: Build and install LLVM
         run: |
           set -euxo pipefail
           cmake --build build-llvm --parallel "$(nproc)"
+          cmake --build build-llvm --target install --parallel "$(nproc)"
 
       - name: Verify generated AArch64 LLVM
         run: |
@@ -206,6 +247,7 @@ jobs:
           test -x llvm-out/bin/clang
           test -x llvm-out/bin/clang++
           test -x llvm-out/bin/ld.lld
+          test "$(git -C llvm-project rev-parse HEAD)" = "${LLVM_SOURCE_REVISION}"
 
           file llvm-out/bin/clang
           file llvm-out/bin/clang++
@@ -220,23 +262,67 @@ jobs:
           set -euxo pipefail
 
           rm -rf termux-ndk-r28c
-          mkdir -p \
-            termux-ndk-r28c/toolchains/llvm/prebuilt/aarch64-linux-android
 
+          PREBUILT="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
+          OUT="termux-ndk-r28c/toolchains/llvm/prebuilt/aarch64-linux-android"
+
+          mkdir -p "${OUT}"
+
+          # Keep the official r28c NDK metadata and non-LLVM support files.
           cp -a "${NDK_DIR}/source.properties" termux-ndk-r28c/
-          cp -a "${NDK_DIR}/build" termux-ndk-r28c/
-          cp -a "${NDK_DIR}/meta" termux-ndk-r28c/
 
-          cp -a "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
-            termux-ndk-r28c/toolchains/llvm/prebuilt/aarch64-linux-android/
-
-          cp -a llvm-out/. \
-            termux-ndk-r28c/toolchains/llvm/prebuilt/aarch64-linux-android/
-
-          if [ -d "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/lib64" ]; then
-            cp -a "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/lib64" \
-              termux-ndk-r28c/toolchains/llvm/prebuilt/aarch64-linux-android/
+          if [ -d "${NDK_DIR}/build" ]; then
+            cp -a "${NDK_DIR}/build" termux-ndk-r28c/
           fi
+
+          if [ -d "${NDK_DIR}/meta" ]; then
+            cp -a "${NDK_DIR}/meta" termux-ndk-r28c/
+          fi
+
+          # The sysroot is supplied by the official r28c package.
+          cp -a "${PREBUILT}/sysroot" "${OUT}/"
+
+          # Install the newly-built AArch64 Android LLVM/Clang tree.
+          test -d llvm-out
+          cp -a llvm-out/. "${OUT}/"
+
+          # Preserve any official NDK files that are not part of the LLVM
+          # install tree, without copying x86_64 compiler executables.
+          for item in "${PREBUILT}"/*; do
+            name="$(basename "${item}")"
+            case "${name}" in
+              bin|lib|lib64|include|share|sysroot)
+                ;;
+              *)
+                cp -a "${item}" "${OUT}/"
+                ;;
+            esac
+          done
+
+          # The final package must not contain the official x86_64 compiler
+          # binaries under the Termux-native prebuilt directory.
+          if find "${OUT}/bin" -type f -perm -u+x -print0 2>/dev/null |
+              xargs -0 -r file | grep -Eiq 'x86-64|x86_64'; then
+            echo "ERROR: x86_64 executable leaked into the Termux LLVM tree."
+            exit 1
+          fi
+
+          test -x "${OUT}/bin/clang"
+          test -x "${OUT}/bin/clang++"
+          test -x "${OUT}/bin/ld.lld"
+
+          echo "=== Final native clang ==="
+          file "${OUT}/bin/clang"
+
+          echo "=== Final native clang++ ==="
+          file "${OUT}/bin/clang++"
+
+          echo "=== Final native lld ==="
+          file "${OUT}/bin/ld.lld"
+
+          file "${OUT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
+          file "${OUT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
+          file "${OUT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
 
           tar -cJf android-ndk-r28c-termux-aarch64.tar.xz termux-ndk-r28c
 
