@@ -56,7 +56,7 @@ jobs:
             binutils \
             patchelf
 
-      - name: Download official NDK r28c
+      - name: Download official Android NDK r28c
         shell: bash
         run: |
           set -euxo pipefail
@@ -65,28 +65,34 @@ jobs:
             "https://dl.google.com/android/repository/${NDK_PACKAGE}"
 
           unzip -q "${NDK_PACKAGE}"
+
           test -d "${NDK_DIR}"
+          test -f "${NDK_DIR}/source.properties"
 
-          echo "Installed NDK:"
-          "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+          grep -q "Pkg.Revision = ${NDK_VERSION}" \
+            "${NDK_DIR}/source.properties"
 
-      - name: Verify official NDK r28c
+      - name: Verify official r28c NDK
         shell: bash
         run: |
           set -euxo pipefail
 
-          test -f "${NDK_DIR}/source.properties"
-          grep -q "Pkg.Revision = ${NDK_VERSION}" "${NDK_DIR}/source.properties"
-
           LLVM_DIR="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
+
+          test -f "${NDK_DIR}/source.properties"
+          grep -q "Pkg.Revision = ${NDK_VERSION}" \
+            "${NDK_DIR}/source.properties"
 
           test -x "${LLVM_DIR}/bin/clang"
           test -x "${LLVM_DIR}/bin/clang++"
-          test -x "${LLVM_DIR}/bin/llvm-tblgen"
-          test -d "${LLVM_DIR}/sysroot"
+          test -x "${LLVM_DIR}/bin/ld.lld"
 
+          echo "Official NDK:"
+          cat "${NDK_DIR}/source.properties"
+
+          echo
+          echo "Official r28c Clang:"
           "${LLVM_DIR}/bin/clang" --version
-          file "${LLVM_DIR}/bin/clang"
 
       - name: Restore CCache
         uses: actions/cache@v4
