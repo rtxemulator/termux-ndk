@@ -139,26 +139,48 @@ jobs:
           echo "Android LLVM helper repository:"
           git -C llvm_android rev-parse HEAD
 
-      - name: Prepare native build tools
+      - name: Build native LLVM host tools
         shell: bash
         run: |
           set -euxo pipefail
 
-          LLVM_DIR="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
+          rm -rf native-tools native-build
+
+          cmake \
+            -S llvm-project/llvm \
+            -B native-build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS="clang" \
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM" \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_CURL=OFF \
+            -DLLVM_ENABLE_FFI=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF
+
+          cmake --build native-build \
+            --target llvm-tblgen clang-tblgen llvm-config \
+            --parallel "$(nproc)"
 
           mkdir -p native-tools
 
-          # These execute on the x86_64 GitHub runner while the resulting
-          # LLVM tools are built for aarch64-linux-android.
-          for tool in llvm-tblgen clang-tblgen llvm-config; do
-            if [ -x "${LLVM_DIR}/bin/${tool}" ]; then
-              cp -a "${LLVM_DIR}/bin/${tool}" "native-tools/${tool}"
-            fi
-          done
+          cp -a native-build/bin/llvm-tblgen native-tools/
+          cp -a native-build/bin/clang-tblgen native-tools/
+          cp -a native-build/bin/llvm-config native-tools/
 
           test -x native-tools/llvm-tblgen
+          test -x native-tools/clang-tblgen
+          test -x native-tools/llvm-config
 
-          file native-tools/*
+          native-tools/llvm-tblgen --version
+          native-tools/clang-tblgen --version
+          native-tools/llvm-config --version
 
       - name: Determine exact LLVM source revision
         shell: bash
