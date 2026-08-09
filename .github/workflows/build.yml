@@ -237,13 +237,25 @@ jobs:
           NDK_CLANGXX="${LLVM_DIR}/bin/clang++"
           NDK_LLD="${LLVM_DIR}/bin/ld.lld"
 
+          NATIVE_TOOLS="${GITHUB_WORKSPACE}/native-tools"
+
           test -x "${NDK_CLANG}"
           test -x "${NDK_CLANGXX}"
           test -x "${NDK_LLD}"
-          test -d "${NDK_SYSROOT}"
+
+          test -x "${NATIVE_TOOLS}/llvm-tblgen"
+          test -x "${NATIVE_TOOLS}/clang-tblgen"
+
+          echo "=== Native TableGen ==="
+          file "${NATIVE_TOOLS}/llvm-tblgen"
+          file "${NATIVE_TOOLS}/clang-tblgen"
+
+          echo "=== Verify native tools are x86_64 ==="
+          file "${NATIVE_TOOLS}/llvm-tblgen" | grep -q 'x86-64'
+          file "${NATIVE_TOOLS}/clang-tblgen" | grep -q 'x86-64'
 
           rm -rf build-llvm llvm-out
-          mkdir build-llvm
+          mkdir -p build-llvm
 
           cd build-llvm
 
@@ -263,7 +275,10 @@ jobs:
             -DLLVM_DEFAULT_TARGET_TRIPLE="${HOST_TRIPLE}" \
             -DLLVM_TARGETS_TO_BUILD="AArch64" \
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
-            -DLLVM_NATIVE_TOOL_DIR="${GITHUB_WORKSPACE}/native-tools" \
+            -DLLVM_NATIVE_TOOL_DIR="${NATIVE_TOOLS}" \
+            -DLLVM_TABLEGEN="${NATIVE_TOOLS}/llvm-tblgen" \
+            -DCLANG_TABLEGEN="${NATIVE_TOOLS}/clang-tblgen" \
+            -DLLVM_USE_HOST_TOOLS=ON \
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_ENABLE_LIBEDIT=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
@@ -280,8 +295,10 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-          cmake --build . \
-            --parallel "$(nproc)"
+          echo "=== CMake cache TableGen configuration ==="
+          grep -E '^(LLVM_TABLEGEN|CLANG_TABLEGEN|LLVM_NATIVE_TOOL_DIR|LLVM_USE_HOST_TOOLS):' CMakeCache.txt || true
+
+          cmake --build . --parallel "$(nproc)"
             
       - name: Build LLVM
         shell: bash
