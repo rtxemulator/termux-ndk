@@ -61,7 +61,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          wget --fail --show-progress \
+          wget --show-progress \
             "https://dl.google.com/android/repository/${NDK_PACKAGE}"
 
           unzip -q "${NDK_PACKAGE}"
