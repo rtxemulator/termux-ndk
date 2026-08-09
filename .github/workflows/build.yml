@@ -230,7 +230,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          LLVM_DIR="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
+          LLVM_DIR="${GITHUB_WORKSPACE}/${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
           NDK_SYSROOT="${LLVM_DIR}/sysroot"
 
           NDK_CLANG="${LLVM_DIR}/bin/clang"
@@ -247,21 +247,18 @@ jobs:
 
           cd build-llvm
 
-          # The existing NDK compiler is the x86_64 build compiler.
-          # --target makes the compiler produce aarch64 Android binaries.
-          #
-          # LLVM_NATIVE_TOOL_DIR supplies native x86_64 TableGen/build tools.
           cmake -G Ninja ../llvm-project/llvm \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/llvm-out" \
             -DCMAKE_C_COMPILER="${NDK_CLANG}" \
             -DCMAKE_CXX_COMPILER="${NDK_CLANGXX}" \
+            -DCMAKE_ASM_COMPILER="${NDK_CLANG}" \
             -DCMAKE_C_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT}" \
             -DCMAKE_CXX_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT}" \
+            -DCMAKE_ASM_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT}" \
             -DCMAKE_EXE_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD}" \
-            -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_SYSTEM_VERSION="${ANDROID_API}" \
-            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_SHARED_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD}" \
+            -DCMAKE_MODULE_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD}" \
             -DLLVM_HOST_TRIPLE="${HOST_TRIPLE}" \
             -DLLVM_DEFAULT_TARGET_TRIPLE="${HOST_TRIPLE}" \
             -DLLVM_TARGETS_TO_BUILD="AArch64" \
@@ -272,6 +269,8 @@ jobs:
             -DLLVM_ENABLE_LIBXML2=OFF \
             -DLLVM_ENABLE_CURL=OFF \
             -DLLVM_ENABLE_FFI=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
             -DLLVM_BUILD_TESTS=OFF \
             -DLLVM_INCLUDE_TESTS=OFF \
             -DLLVM_INCLUDE_EXAMPLES=OFF \
@@ -281,6 +280,9 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
+          cmake --build . \
+            --parallel "$(nproc)"
+            
       - name: Build LLVM
         shell: bash
         run: |
