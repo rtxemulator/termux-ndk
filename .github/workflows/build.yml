@@ -247,6 +247,13 @@ jobs:
           grep -E '^(LLVM_TABLEGEN|CLANG_TABLEGEN|LLVM_NATIVE_TOOL_DIR|CLANG_TOOLING_BUILD_AST_INTROSPECTION):' \
             CMakeCache.txt || true
 
+      - name: Validate configured build
+        run: |
+          set -euxo pipefail
+          test -f build-llvm/build.ninja
+          test -f build-llvm/CMakeCache.txt
+          echo "CMake configuration succeeded; starting LLVM build."
+
       - name: Build LLVM
         run: |
           set -euxo pipefail
