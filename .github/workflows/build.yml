@@ -195,6 +195,10 @@ jobs:
           mkdir build-llvm
           cd build-llvm
 
+            # LLVM's r530567 CheckCompilerVersion test otherwise expects
+            # a host libstdc++ (__GLIBCXX__) even though this C++ compiler
+            # targets Android/bionic. Build LLVM against the NDK's libc++
+            # instead, which also matches the Termux/NDK toolchain model.
           cmake -G Ninja ../llvm-project/llvm \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/llvm-out" \
@@ -219,10 +223,6 @@ jobs:
             -DLLVM_DEFAULT_TARGET_TRIPLE="${HOST_TRIPLE}${ANDROID_API}" \
             -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" \
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
-            # LLVM's r530567 CheckCompilerVersion test otherwise expects
-            # a host libstdc++ (__GLIBCXX__) even though this C++ compiler
-            # targets Android/bionic. Build LLVM against the NDK's libc++
-            # instead, which also matches the Termux/NDK toolchain model.
             -DLLVM_ENABLE_LIBCXX=ON \
             -DLLVM_NATIVE_TOOL_DIR="${NATIVE_TOOLS}" \
             -DCLANG_TOOLING_BUILD_AST_INTROSPECTION=OFF \
