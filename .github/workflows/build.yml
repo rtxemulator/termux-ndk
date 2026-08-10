@@ -273,18 +273,18 @@ jobs:
       - name: Verify generated AArch64 LLVM
         run: |
           set -euxo pipefail
-
+      
           test -x llvm-out/bin/clang
           test -x llvm-out/bin/clang++
           test -x llvm-out/bin/ld.lld
-
-          file llvm-out/bin/clang
-          file llvm-out/bin/clang++
-          file llvm-out/bin/ld.lld
-
-          file llvm-out/bin/clang | grep -Eiq 'ARM aarch64|AArch64'
-          file llvm-out/bin/clang++ | grep -Eiq 'ARM aarch64|AArch64'
-          file llvm-out/bin/ld.lld | grep -Eiq 'ARM aarch64|AArch64'
+      
+          file -L llvm-out/bin/clang
+          file -L llvm-out/bin/clang++
+          file -L llvm-out/bin/ld.lld
+      
+          file -L llvm-out/bin/clang | grep -Eiq 'ARM aarch64|AArch64'
+          file -L llvm-out/bin/clang++ | grep -Eiq 'ARM aarch64|AArch64'
+          file -L llvm-out/bin/ld.lld | grep -Eiq 'ARM aarch64|AArch64
 
       - name: Patch NDK host detection and assemble Termux package
         run: |
