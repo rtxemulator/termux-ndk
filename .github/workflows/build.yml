@@ -228,6 +228,8 @@ jobs:
             -DCLANG_TOOLING_BUILD_AST_INTROSPECTION=OFF \
             -DLLVM_TABLEGEN="${NATIVE_TOOLS}/llvm-tblgen" \
             -DCLANG_TABLEGEN="${NATIVE_TOOLS}/clang-tblgen" \
+            -DHAVE_LIBPTHREAD=OFF \
+            -DHAVE_LIBRT=OFF \
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_ENABLE_LIBEDIT=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
