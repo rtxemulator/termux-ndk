@@ -194,33 +194,11 @@ jobs:
             test -x "${NATIVE_TOOLS}/${tool}"
           done
 
-          # r530567 predates LLVM's later CLANG_AST_DUMP cross-build hook.
-          # Patch the small CMake command locally so the AST generator runs
-          # the native x86_64 helper instead of the AArch64 target binary.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("llvm-project/clang/lib/Tooling/CMakeLists.txt")
-          s = p.read_text()
-          if "CLANG_AST_DUMP" not in s:
-              needle = "add_custom_command(\n  COMMENT Generate ASTNodeAPI.json"
-              if needle not in s:
-                  raise SystemExit("Unexpected r530567 clang/lib/Tooling/CMakeLists.txt layout")
-              s = s.replace(
-                  needle,
-                  'if(NOT DEFINED CLANG_AST_DUMP)\n'
-                  '  set(CLANG_AST_DUMP $<TARGET_FILE:clang-ast-dump>)\n'
-                  'endif()\n\n'
-                  + needle,
-                  1,
-              )
-              old = "    $<TARGET_FILE:clang-ast-dump>"
-              if old not in s:
-                  raise SystemExit("Could not find clang-ast-dump custom command")
-              s = s.replace(old, "    ${CLANG_AST_DUMP}", 1)
-              p.write_text(s)
-          PY
-
-          grep -n -A8 -B3 "CLANG_AST_DUMP" llvm-project/clang/lib/Tooling/CMakeLists.txt
+          # r530567 predates LLVM's later native CLANG_AST_DUMP cross-build hook.
+          # In this release the AST introspection generator is an optional
+          # build-time artifact. Disable it for the cross-build rather than
+          # trying to execute the target AArch64 clang-ast-dump on the x86_64
+          # GitHub runner. This does not remove clang/LLVM functionality.
 
           rm -rf build-llvm llvm-out
           mkdir build-llvm
@@ -253,7 +231,6 @@ jobs:
             -DLLVM_NATIVE_TOOL_DIR="${NATIVE_TOOLS}" \
             -DLLVM_TABLEGEN="${NATIVE_TOOLS}/llvm-tblgen" \
             -DCLANG_TABLEGEN="${NATIVE_TOOLS}/clang-tblgen" \
-            -DCLANG_AST_DUMP="${NATIVE_TOOLS}/clang-ast-dump" \
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_ENABLE_LIBEDIT=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
@@ -261,6 +238,7 @@ jobs:
             -DLLVM_ENABLE_FFI=OFF \
             -DLLVM_ENABLE_ZLIB=OFF \
             -DLLVM_ENABLE_ZSTD=OFF \
+            -DCLANG_TOOLING_BUILD_AST_INTROSPECTION=OFF \
             -DLLVM_BUILD_TESTS=OFF \
             -DLLVM_INCLUDE_TESTS=OFF \
             -DLLVM_INCLUDE_EXAMPLES=OFF \
@@ -270,7 +248,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-          grep -E '^(LLVM_TABLEGEN|CLANG_TABLEGEN|CLANG_AST_DUMP|LLVM_NATIVE_TOOL_DIR):' \
+          grep -E '^(LLVM_TABLEGEN|CLANG_TABLEGEN|LLVM_NATIVE_TOOL_DIR|CLANG_TOOLING_BUILD_AST_INTROSPECTION):' \
             CMakeCache.txt || true
 
       - name: Build LLVM
@@ -342,10 +320,6 @@ jobs:
           file "${TERMUX_PREBUILT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
           file "${TERMUX_PREBUILT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
           file "${TERMUX_PREBUILT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
-          test -f "${TERMUX_PREBUILT}/clang_source_info.md"
-          grep -q "${LLVM_SOURCE_REVISION}" "${TERMUX_PREBUILT}/clang_source_info.md"
-          grep -q "${LLVM_VERSION}" "${TERMUX_PREBUILT}/clang_source_info.md"
-
           grep -q "Pkg.Revision = ${NDK_VERSION}" \
             termux-ndk-r28c/source.properties
 
@@ -357,6 +331,10 @@ jobs:
             "Host platform: Linux AArch64 (Termux)" \
             "Target triple: ${HOST_TRIPLE}" \
             > "${TERMUX_PREBUILT}/clang_source_info.md"
+
+          test -f "${TERMUX_PREBUILT}/clang_source_info.md"
+          grep -q "${LLVM_SOURCE_REVISION}" "${TERMUX_PREBUILT}/clang_source_info.md"
+          grep -q "${LLVM_VERSION}" "${TERMUX_PREBUILT}/clang_source_info.md"
 
           tar -cJf android-ndk-r28c-termux-aarch64.tar.xz termux-ndk-r28c
           test -s android-ndk-r28c-termux-aarch64.tar.xz
