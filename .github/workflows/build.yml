@@ -47,6 +47,8 @@ jobs:
           set -euxo pipefail
           wget --show-progress \
             "https://dl.google.com/android/repository/${NDK_PACKAGE}"
+
+          echo "a7b54a5de87fecd125a17d54f73c446199e72a64  ${NDK_PACKAGE}" | sha1sum -c -
           unzip -q "${NDK_PACKAGE}"
           test -d "${NDK_DIR}"
           test -f "${NDK_DIR}/source.properties"
@@ -69,25 +71,45 @@ jobs:
           cat "${NDK_DIR}/source.properties"
           "${LLVM_DIR}/bin/clang" --version
 
-      - name: Checkout exact r28c LLVM source
+      - name: Checkout exact r28c Android LLVM sources and patch set
         run: |
           set -euxo pipefail
-          rm -rf llvm-project
 
-          git clone \
-            --filter=blob:none \
-            --no-checkout \
-            https://android.googlesource.com/toolchain/llvm-project.git \
-            llvm-project
+          rm -rf llvm-project llvm_android toolchain-utils
 
+          # r28c is clang-r530567e. Android's llvm-r530567 branch is the
+          # Android toolchain branch for that compiler generation. The NDK's
+          # clang_source_info identifies 3b5e7c83... as the upstream base;
+          # llvm_android supplies the Android-specific downstream patches.
+          git clone --filter=blob:none --no-checkout \
+            https://android.googlesource.com/toolchain/llvm-project.git llvm-project
           cd llvm-project
           git fetch --depth=1 origin "${LLVM_SOURCE_REVISION}"
           git checkout --detach "${LLVM_SOURCE_REVISION}"
+          cd ..
 
-          ACTUAL_REVISION="$(git rev-parse HEAD)"
-          echo "Expected: ${LLVM_SOURCE_REVISION}"
-          echo "Actual:   ${ACTUAL_REVISION}"
-          test "${ACTUAL_REVISION}" = "${LLVM_SOURCE_REVISION}"
+          git clone --depth=1 -b llvm-r530567 \
+            https://android.googlesource.com/toolchain/llvm_android.git llvm_android
+
+          git clone --depth=1 -b llvm-r530567 \
+            https://android.googlesource.com/platform/external/toolchain-utils.git toolchain-utils
+
+          test "$(git -C llvm-project rev-parse HEAD)" = "${LLVM_SOURCE_REVISION}"
+          test -f llvm_android/patches/PATCHES.json
+          test -x toolchain-utils/llvm_tools/patch_manager.py || test -f toolchain-utils/llvm_tools/patch_manager.py
+
+          # 530567 is the Android LLVM revision used by r28c. Apply the exact
+          # Android patch metadata from the llvm-r530567 toolchain branch.
+          PYTHONPATH="${GITHUB_WORKSPACE}/toolchain-utils" \
+            python3 toolchain-utils/llvm_tools/patch_manager.py \
+              --svn_version 530567 \
+              --patch_metadata_file "${GITHUB_WORKSPACE}/llvm_android/patches/PATCHES.json" \
+              --filesdir_path "${GITHUB_WORKSPACE}/llvm_android/patches" \
+              --src_path "${GITHUB_WORKSPACE}/llvm-project" \
+              --failure_mode fail
+
+          echo "LLVM base: $(git -C llvm-project rev-parse HEAD)"
+          echo "Android LLVM branch: $(git -C llvm_android rev-parse HEAD)"
 
       - name: Patch LLVM build-time host tool wiring
         run: |
@@ -155,7 +177,7 @@ jobs:
             -DLLVM_ENABLE_ZSTD=OFF
 
           cmake --build native-build \
-            --target llvm-tblgen clang-tblgen llvm-config \
+            --target clang clang++ clang-ast-dump llvm-tblgen clang-tblgen llvm-config \
             --parallel "$(nproc)"
 
           mkdir -p native-tools
@@ -163,9 +185,17 @@ jobs:
           cp -a native-build/bin/clang-tblgen native-tools/
           cp -a native-build/bin/llvm-config native-tools/
 
-          test -x native-tools/llvm-tblgen
-          test -x native-tools/clang-tblgen
-          test -x native-tools/llvm-config
+          cp -a native-build/bin/clang native-tools/
+          cp -a native-build/bin/clang++ native-tools/
+          cp -a native-build/bin/clang-ast-dump native-tools/
+
+          for tool in clang clang++ clang-ast-dump llvm-tblgen clang-tblgen llvm-config; do
+            test -x "native-tools/${tool}"
+          done
+
+          file native-tools/clang | grep -Eiq 'x86-64|x86_64'
+          file native-tools/clang-ast-dump | grep -Eiq 'x86-64|x86_64'
+          file native-tools/llvm-tblgen | grep -Eiq 'x86-64|x86_64' 
 
           file native-tools/llvm-tblgen
           file native-tools/clang-tblgen
@@ -188,8 +218,9 @@ jobs:
           test -x "${NDK_CLANGXX}"
           test -x "${NDK_LLD}"
           test -d "${NDK_SYSROOT}"
-          test -x "${NATIVE_TOOLS}/llvm-tblgen"
-          test -x "${NATIVE_TOOLS}/clang-tblgen"
+          for tool in clang clang++ clang-ast-dump llvm-tblgen clang-tblgen llvm-config; do
+            test -x "${NATIVE_TOOLS}/${tool}"
+          done
 
           rm -rf build-llvm llvm-out
           mkdir build-llvm
@@ -207,6 +238,11 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD}" \
             -DCMAKE_SHARED_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD}" \
             -DCMAKE_MODULE_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD}" \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION="${ANDROID_API}" \
+            -DCMAKE_ANDROID_NDK="${GITHUB_WORKSPACE}/${NDK_DIR}" \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DLLVM_HOST_TRIPLE="${HOST_TRIPLE}" \
             -DLLVM_DEFAULT_TARGET_TRIPLE="${HOST_TRIPLE}" \
             -DLLVM_TARGETS_TO_BUILD="AArch64" \
@@ -214,7 +250,6 @@ jobs:
             -DLLVM_NATIVE_TOOL_DIR="${NATIVE_TOOLS}" \
             -DLLVM_TABLEGEN="${NATIVE_TOOLS}/llvm-tblgen" \
             -DCLANG_TABLEGEN="${NATIVE_TOOLS}/clang-tblgen" \
-            -DLLVM_USE_HOST_TOOLS=ON \
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_ENABLE_LIBEDIT=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
@@ -263,69 +298,94 @@ jobs:
 
           rm -rf termux-ndk-r28c
 
-          PREBUILT="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
-          OUT="termux-ndk-r28c/toolchains/llvm/prebuilt/aarch64-linux-android"
+          # Start from the complete official r28c NDK so all non-LLVM files
+          # remain available. Only the host LLVM prebuilt is replaced.
+          cp -a "${NDK_DIR}" termux-ndk-r28c
 
-          mkdir -p "${OUT}"
+          OFFICIAL_PREBUILT="termux-ndk-r28c/toolchains/llvm/prebuilt/linux-x86_64"
+          TERMUX_PREBUILT="termux-ndk-r28c/toolchains/llvm/prebuilt/linux-aarch64"
 
-          # Keep the official r28c NDK metadata and non-LLVM support files.
-          cp -a "${NDK_DIR}/source.properties" termux-ndk-r28c/
+          test -d "${OFFICIAL_PREBUILT}"
+          rm -rf "${TERMUX_PREBUILT}"
+          mkdir -p "${TERMUX_PREBUILT}"
 
-          if [ -d "${NDK_DIR}/build" ]; then
-            cp -a "${NDK_DIR}/build" termux-ndk-r28c/
+          # Keep the official r28c sysroot and support data.
+          cp -a "${OFFICIAL_PREBUILT}/sysroot" "${TERMUX_PREBUILT}/"
+
+          # Preserve only symlinks from the official bin directory. The real
+          # x86_64 ELF files must never enter the Termux package.
+          mkdir -p "${TERMUX_PREBUILT}/bin"
+          while IFS= read -r -d '' link; do
+            cp -a "${link}" "${TERMUX_PREBUILT}/bin/"
+          done < <(find "${OFFICIAL_PREBUILT}/bin" -maxdepth 1 -type l -print0)
+
+          if [ -d "${OFFICIAL_PREBUILT}/lib64" ]; then
+            cp -a "${OFFICIAL_PREBUILT}/lib64" "${TERMUX_PREBUILT}/"
+          fi
+          if [ -d "${OFFICIAL_PREBUILT}/include" ]; then
+            cp -a "${OFFICIAL_PREBUILT}/include" "${TERMUX_PREBUILT}/"
+          fi
+          if [ -d "${OFFICIAL_PREBUILT}/share" ]; then
+            cp -a "${OFFICIAL_PREBUILT}/share" "${TERMUX_PREBUILT}/"
           fi
 
-          if [ -d "${NDK_DIR}/meta" ]; then
-            cp -a "${NDK_DIR}/meta" termux-ndk-r28c/
+          # Replace the LLVM implementation itself with the AArch64 Android
+          # build. This also supplies llvm-ar/llvm-nm/etc. where LLVM installs
+          # them.
+          cp -a llvm-out/. "${TERMUX_PREBUILT}/"
+
+          # The host directory name used by existing Termux NDK releases is
+          # linux-aarch64: the binaries themselves are Android AArch64.
+          # Do NOT call this aarch64-linux-android; that is the target triple,
+          # not the NDK host-prebuilt directory convention.
+          test -x "${TERMUX_PREBUILT}/bin/clang"
+          test -x "${TERMUX_PREBUILT}/bin/clang++"
+          test -x "${TERMUX_PREBUILT}/bin/ld.lld"
+
+          file "${TERMUX_PREBUILT}/bin/clang"
+          file "${TERMUX_PREBUILT}/bin/clang++"
+          file "${TERMUX_PREBUILT}/bin/ld.lld"
+
+          file "${TERMUX_PREBUILT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
+          file "${TERMUX_PREBUILT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
+          file "${TERMUX_PREBUILT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
+
+          # Remove the original x86_64 host compiler directory.
+          rm -rf "${OFFICIAL_PREBUILT}"
+
+          # simpleperf is another NDK host executable. r28c ships an Android
+          # arm64 simpleperf binary which can be used directly from Termux.
+          if [ -f "termux-ndk-r28c/simpleperf/android/arm64/simpleperf" ]; then
+            rm -rf termux-ndk-r28c/simpleperf/bin/linux-x86_64
+            mkdir -p termux-ndk-r28c/simpleperf/bin/linux-aarch64
+            ln -sf ../../android/arm64/simpleperf \
+              termux-ndk-r28c/simpleperf/bin/linux-aarch64/simpleperf
           fi
 
-          # The sysroot is supplied by the official r28c package.
-          cp -a "${PREBUILT}/sysroot" "${OUT}/"
-
-          # Install the newly-built AArch64 Android LLVM/Clang tree.
-          test -d llvm-out
-          cp -a llvm-out/. "${OUT}/"
-
-          # Preserve any official NDK files that are not part of the LLVM
-          # install tree, without copying x86_64 compiler executables.
-          for item in "${PREBUILT}"/*; do
-            name="$(basename "${item}")"
-            case "${name}" in
-              bin|lib|lib64|include|share|sysroot)
-                ;;
-              *)
-                cp -a "${item}" "${OUT}/"
-                ;;
-            esac
-          done
-
-          # The final package must not contain the official x86_64 compiler
-          # binaries under the Termux-native prebuilt directory.
-          if find "${OUT}/bin" -type f -perm -u+x -print0 2>/dev/null |
+          # There must be no x86_64 ELF left in the host-tool locations we
+          # expect Termux to execute. Other official NDK files may remain
+          # platform-specific data and are not treated as Termux host tools.
+          if find "termux-ndk-r28c/toolchains/llvm/prebuilt/linux-aarch64/bin" \
+              "termux-ndk-r28c/simpleperf/bin/linux-aarch64" \
+              -type f -perm -u+x -print0 2>/dev/null |
               xargs -0 -r file | grep -Eiq 'x86-64|x86_64'; then
-            echo "ERROR: x86_64 executable leaked into the Termux LLVM tree."
+            echo "ERROR: x86_64 executable leaked into Termux host-tool directories."
             exit 1
           fi
 
-          test -x "${OUT}/bin/clang"
-          test -x "${OUT}/bin/clang++"
-          test -x "${OUT}/bin/ld.lld"
-
-          echo "=== Final native clang ==="
-          file "${OUT}/bin/clang"
-
-          echo "=== Final native clang++ ==="
-          file "${OUT}/bin/clang++"
-
-          echo "=== Final native lld ==="
-          file "${OUT}/bin/ld.lld"
-
-          file "${OUT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
-          file "${OUT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
-          file "${OUT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
+          # Make the r28c identity explicit in the package.
+          grep -q "Pkg.Revision = ${NDK_VERSION}" "termux-ndk-r28c/source.properties"
+          printf '%s\n' \
+            "NDK_VERSION=${NDK_VERSION}" \
+            "CLANG_VERSION=${LLVM_VERSION}" \
+            "LLVM_BASE_REVISION=${LLVM_SOURCE_REVISION}" \
+            "LLVM_ANDROID_BRANCH=llvm-r530567" \
+            "TERMUX_HOST_PREBUILT=linux-aarch64" \
+            "TARGET_TRIPLE=${HOST_TRIPLE}" \
+            "ANDROID_API=${ANDROID_API}" \
+            > termux-ndk-r28c/TERMUX_NDK_BUILD_INFO
 
           tar -cJf android-ndk-r28c-termux-aarch64.tar.xz termux-ndk-r28c
-
           test -s android-ndk-r28c-termux-aarch64.tar.xz
           ls -lh android-ndk-r28c-termux-aarch64.tar.xz
 
