@@ -284,7 +284,7 @@ jobs:
       
           file -L llvm-out/bin/clang | grep -Eiq 'ARM aarch64|AArch64'
           file -L llvm-out/bin/clang++ | grep -Eiq 'ARM aarch64|AArch64'
-          file -L llvm-out/bin/ld.lld | grep -Eiq 'ARM aarch64|AArch64
+          file -L llvm-out/bin/ld.lld | grep -Eiq 'ARM aarch64|AArch64'
 
       - name: Patch NDK host detection and assemble Termux package
         run: |
