@@ -331,26 +331,13 @@ jobs:
               s = s.replace(needle, needle + '  aarch64) HOST_ARCH=aarch64;;\n', 1)
           p.write_text(s)
 
-          # The NDK's Python toolchain selector needs the Termux host triple.
-          # Fail if r28c's layout differs rather than silently creating a
-          # package whose host metadata still says x86_64.
-          p = ndk / "ndk/toolchains.py"
-          s = p.read_text()
-          replacements = [
-              ('Host.Linux: "x86_64-linux-gnu"',
-               'Host.Linux: "aarch64-linux-android28"'),
-              ("Host.Linux: 'x86_64-linux-gnu'",
-               "Host.Linux: 'aarch64-linux-android28'"),
-          ]
-          for old, new in replacements:
-              if old in s:
-                  s = s.replace(old, new, 1)
-                  break
-          else:
-              if ('Host.Linux: "aarch64-linux-android28"' not in s and
-                  "Host.Linux: 'aarch64-linux-android28'" not in s):
-                  raise SystemExit(f"Unexpected toolchains.py HOST_TRIPLE_MAP layout: {p}")
-          p.write_text(s)
+          # NOTE: ndk/toolchains.py and checkbuild.py belong to the AOSP
+          # platform/ndk *source* repo (used by Google to build releases).
+          # They are never present in the distributed android-ndk-*.zip,
+          # so there is nothing to patch there for a packaged release.
+          # Host detection for a packaged NDK only needs the two patches
+          # above: android.toolchain.cmake (CMake) and ndk_bin_common.sh
+          # (shell scripts / clang wrapper generation).
           PY
 
           # Preserve the official r28c sysroot, headers, libc++, scripts and
