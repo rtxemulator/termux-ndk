@@ -355,18 +355,21 @@ jobs:
           # Remove only ELF x86 host executables from the copied official bin
           # directory. Text wrappers and data files remain intact.
           while IFS= read -r -d '' f; do
-            if file "$f" | grep -Eiq 'ELF.*x86-64|ELF.*x86_64'; then
+            if file -L "$f" | grep -Eiq 'ELF.*x86-64|ELF.*x86_64'; then
               rm -f "$f"
             fi
-          done < <(find "${PREBUILT}/bin" -maxdepth 1 -type f -perm -111 -print0)
+          done < <(find "${PREBUILT}/bin" -maxdepth 1 -perm -111 -print0)
 
           test -x "${PREBUILT}/bin/clang"
           test -x "${PREBUILT}/bin/clang++"
           test -x "${PREBUILT}/bin/ld.lld"
 
-          file "${PREBUILT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
-          file "${PREBUILT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
-          file "${PREBUILT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
+          # clang/clang++ are symlinks to the versioned clang-NN binary
+          # (e.g. clang-19); use -L to dereference and inspect the real
+          # target ELF instead of reporting "symbolic link to clang-19".
+          file -L "${PREBUILT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
 
           cat > "${PREBUILT}/clang_source_info.md" <<EOF
           Android Clang: ${LLVM_VERSION}
