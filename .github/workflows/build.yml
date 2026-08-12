@@ -166,8 +166,14 @@ jobs:
             llvm-strip \
           ; do
             test -x "native-build/bin/${tool}"
-            cp -a "native-build/bin/${tool}" "native-tools/${tool}"
-            file "native-tools/${tool}" | grep -Eiq 'x86-64|x86_64'
+            # -L / -H: dereference symlinks when copying. llvm-strip in
+            # particular is installed as a symlink to llvm-objcopy (same
+            # pattern as clang -> clang-19), so a plain `cp -a` would
+            # copy the symlink itself rather than a standalone binary —
+            # useless once separated from native-build/bin. Copying the
+            # dereferenced target keeps native-tools/ self-contained.
+            cp -aL "native-build/bin/${tool}" "native-tools/${tool}"
+            file -L "native-tools/${tool}" | grep -Eiq 'x86-64|x86_64'
           done
 
           echo "Native host tools:"
@@ -417,7 +423,7 @@ jobs:
           # them.
           STRIP="${GITHUB_WORKSPACE}/native-tools/llvm-strip"
           test -x "${STRIP}"
-          file "${STRIP}" | grep -Eiq 'x86-64|x86_64'
+          file -L "${STRIP}" | grep -Eiq 'x86-64|x86_64'
 
           strip_count=0
           while IFS= read -r -d '' f; do
