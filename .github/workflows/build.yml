@@ -155,6 +155,7 @@ jobs:
               llvm-min-tblgen \
               clang-tblgen \
               llvm-config \
+              llvm-strip \
             --parallel "$(nproc)"
 
           for tool in \
@@ -162,6 +163,7 @@ jobs:
             llvm-min-tblgen \
             clang-tblgen \
             llvm-config \
+            llvm-strip \
           ; do
             test -x "native-build/bin/${tool}"
             cp -a "native-build/bin/${tool}" "native-tools/${tool}"
@@ -389,19 +391,33 @@ jobs:
           grep -q "^Pkg.Revision = ${NDK_VERSION}$" "${NDK}/source.properties"
 
           # Strip debug info from the rebuilt AArch64 host tools to cut
-          # package size. IMPORTANT: llvm-strip itself is now an AArch64
-          # binary (we just built and copied it in) and this job runs on
-          # an x86_64 runner, so we cannot execute it here — same
-          # exec-format constraint as clang. Use the runner's native GNU
-          # `strip` (binutils) instead: it runs on x86_64 but can freely
-          # read/rewrite foreign-architecture ELF section headers, since
-          # stripping only edits ELF metadata rather than requiring the
-          # host CPU to understand the target instruction set. Only strip
-          # files we just copied in from llvm-out, so the untouched
-          # official r28c target-runtime libraries (libc++_shared.so etc.)
-          # are left exactly as Google shipped them.
-          command -v strip >/dev/null || { echo "::error::binutils 'strip' not found on runner"; exit 1; }
-          STRIP="strip"
+          # package size.
+          #
+          # Neither obvious "strip" candidate works here:
+          #   - The AArch64 llvm-strip we just built/packaged is an
+          #     AArch64 binary; this job runs on x86_64, so it can't be
+          #     executed at all (same exec-format constraint as clang).
+          #   - The runner's stock GNU `strip` (binutils) is built for
+          #     the host's own architecture's BFD backends only, and does
+          #     NOT reliably parse foreign-arch (aarch64) ELF unless it
+          #     was explicitly built with --enable-targets=all — Ubuntu's
+          #     packaged binutils is not, so it fails with "Unable to
+          #     recognise the format of the input file" on real AArch64
+          #     ELF binaries.
+          #
+          # The correct tool is the *native x86_64* llvm-strip built in
+          # the "Build native x86_64 LLVM host tools" step. LLVM tools'
+          # target support is compile-time (LLVM_TARGETS_TO_BUILD), not
+          # tied to the host they run on, so this x86_64 llvm-strip can
+          # correctly read/rewrite AArch64 ELF while still executing here.
+          #
+          # Only strip files we just copied in from llvm-out, so the
+          # untouched official r28c target-runtime libraries
+          # (libc++_shared.so etc.) are left exactly as Google shipped
+          # them.
+          STRIP="${GITHUB_WORKSPACE}/native-tools/llvm-strip"
+          test -x "${STRIP}"
+          file "${STRIP}" | grep -Eiq 'x86-64|x86_64'
 
           strip_count=0
           while IFS= read -r -d '' f; do
