@@ -37,7 +37,7 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build python3 git ccache wget unzip file
+            build-essential cmake ninja-build python3 git ccache wget unzip file binutils
           cmake --version
           ninja --version
           git --version
@@ -389,29 +389,51 @@ jobs:
           grep -q "^Pkg.Revision = ${NDK_VERSION}$" "${NDK}/source.properties"
 
           # Strip debug info from the rebuilt AArch64 host tools to cut
-          # package size. llvm-strip is architecture-agnostic (it just
-          # rewrites ELF section headers), so the freshly-built AArch64
-          # llvm-strip can safely strip its AArch64 siblings even though
-          # this job runs on an x86_64 runner. Only strip files we just
-          # copied in from llvm-out, so the untouched official r28c
-          # target-runtime libraries (libc++_shared.so etc.) are left
-          # exactly as Google shipped them.
-          STRIP="${PREBUILT}/bin/llvm-strip"
-          test -x "${STRIP}"
+          # package size. IMPORTANT: llvm-strip itself is now an AArch64
+          # binary (we just built and copied it in) and this job runs on
+          # an x86_64 runner, so we cannot execute it here — same
+          # exec-format constraint as clang. Use the runner's native GNU
+          # `strip` (binutils) instead: it runs on x86_64 but can freely
+          # read/rewrite foreign-architecture ELF section headers, since
+          # stripping only edits ELF metadata rather than requiring the
+          # host CPU to understand the target instruction set. Only strip
+          # files we just copied in from llvm-out, so the untouched
+          # official r28c target-runtime libraries (libc++_shared.so etc.)
+          # are left exactly as Google shipped them.
+          command -v strip >/dev/null || { echo "::error::binutils 'strip' not found on runner"; exit 1; }
+          STRIP="strip"
 
+          strip_count=0
           while IFS= read -r -d '' f; do
             if file -L "$f" | grep -Eiq 'ELF.*aarch64|ARM aarch64'; then
-              "${STRIP}" --strip-debug --strip-unneeded "$f" || true
+              before=$(stat -c%s "$f")
+              "${STRIP}" --strip-debug --strip-unneeded "$f"
+              after=$(stat -c%s "$f")
+              echo "stripped: $f (${before} -> ${after} bytes)"
+              strip_count=$((strip_count + 1))
             fi
           done < <(find "${PREBUILT}/bin" -maxdepth 1 -perm -111 -print0)
 
           if [ -d "${PREBUILT}/lib" ]; then
             while IFS= read -r -d '' f; do
               if file -L "$f" | grep -Eiq 'ELF.*aarch64|ARM aarch64'; then
-                "${STRIP}" --strip-debug --strip-unneeded "$f" || true
+                before=$(stat -c%s "$f")
+                "${STRIP}" --strip-debug --strip-unneeded "$f"
+                after=$(stat -c%s "$f")
+                echo "stripped: $f (${before} -> ${after} bytes)"
+                strip_count=$((strip_count + 1))
               fi
             done < <(find "${PREBUILT}/lib" -maxdepth 1 -type f -print0)
           fi
+
+          # Fail loudly if nothing was stripped — silently skipping every
+          # file (as an unexecutable llvm-strip + `|| true` did before)
+          # must never again look like a successful, green build.
+          if [ "${strip_count}" -eq 0 ]; then
+            echo "::error::No AArch64 binaries were stripped; expected clang/clang++/ld.lld etc."
+            exit 1
+          fi
+          echo "Stripped ${strip_count} AArch64 file(s)."
 
           # Re-verify architecture and exported symbols survive stripping.
           # --strip-unneeded removes local/debug symbols but must preserve
