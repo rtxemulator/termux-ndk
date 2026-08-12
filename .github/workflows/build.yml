@@ -388,14 +388,16 @@ jobs:
           grep -q "${LLVM_VERSION}" "${PREBUILT}/clang_source_info.md"
           grep -q "^Pkg.Revision = ${NDK_VERSION}$" "${NDK}/source.properties"
 
-          # Verify the packaged compiler can still target Android AArch64
-          # using the official r28c sysroot retained in this package.
-          "${PREBUILT}/bin/clang" \
-            --target=aarch64-linux-android28 \
-            --sysroot="${PREBUILT}/sysroot" \
-            -c /dev/null \
-            -o /tmp/termux-ndk-r28c-test.o
-          file /tmp/termux-ndk-r28c-test.o | grep -Eiq 'ARM aarch64|AArch64'
+          # NOTE: We deliberately do NOT execute the packaged clang here.
+          # This job runs on an x86_64 runner, but the packaged clang is
+          # an AArch64 binary meant to run natively inside Termux on an
+          # actual Android device — it cannot run on this host at all,
+          # emulated or otherwise, and emulating it here (e.g. via QEMU)
+          # would only prove the instruction set decodes, not that the
+          # package works against Termux's runtime layout. The functional
+          # check (compile + link a real .so, executed natively) happens
+          # in the verify-on-device-arch job below, on a real aarch64
+          # runner, against the uploaded artifact.
 
           tar -cJf android-ndk-r28c-termux-aarch64.tar.xz termux-ndk-r28c
           test -s android-ndk-r28c-termux-aarch64.tar.xz
@@ -407,3 +409,83 @@ jobs:
           name: android-ndk-r28c-termux-aarch64
           path: android-ndk-r28c-termux-aarch64.tar.xz
           if-no-files-found: error
+
+  verify-on-device-arch:
+    name: Verify packaged NDK natively on aarch64
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Download Termux NDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-ndk-r28c-termux-aarch64
+
+      - name: Unpack package
+        run: |
+          set -euxo pipefail
+          tar -xJf android-ndk-r28c-termux-aarch64.tar.xz
+          NDK="${GITHUB_WORKSPACE}/termux-ndk-r28c"
+          echo "NDK=${NDK}" >> "$GITHUB_ENV"
+          echo "PREBUILT=${NDK}/toolchains/llvm/prebuilt/linux-x86_64" >> "$GITHUB_ENV"
+
+      - name: Confirm host toolchain binaries are native aarch64
+        run: |
+          set -euxo pipefail
+          # This runner's own CPU is aarch64, so if the packaged clang is
+          # truly built for this architecture, the kernel will execute it
+          # directly with no emulation involved.
+          uname -m
+          file -L "${PREBUILT}/bin/clang"
+          file -L "${PREBUILT}/bin/clang++"
+          file -L "${PREBUILT}/bin/ld.lld"
+
+      - name: Native compile + link smoke test (object file)
+        run: |
+          set -euxo pipefail
+          "${PREBUILT}/bin/clang" \
+            --target=aarch64-linux-android28 \
+            --sysroot="${PREBUILT}/sysroot" \
+            -c /dev/null \
+            -o /tmp/termux-ndk-r28c-test.o
+          file /tmp/termux-ndk-r28c-test.o | grep -Eiq 'ARM aarch64|AArch64'
+
+      - name: Native build of a real shared library (.so)
+        run: |
+          set -euxo pipefail
+          # This mirrors what a Termux user actually does with this NDK:
+          # build a JNI-style native shared library targeting Android.
+          cat > /tmp/testlib.c <<'EOF'
+          #include <jni.h>
+
+          JNIEXPORT jint JNICALL
+          Java_com_example_Native_add(JNIEnv *env, jobject thiz, jint a, jint b) {
+              return a + b;
+          }
+          EOF
+
+          "${PREBUILT}/bin/clang" \
+            --target=aarch64-linux-android28 \
+            --sysroot="${PREBUILT}/sysroot" \
+            -I"${PREBUILT}/sysroot/usr/include" \
+            -fPIC -shared \
+            -Wl,-soname,libtestlib.so \
+            -o /tmp/libtestlib.so \
+            /tmp/testlib.c \
+            -fuse-ld=lld
+
+          test -s /tmp/libtestlib.so
+          file /tmp/libtestlib.so
+          file /tmp/libtestlib.so | grep -Eiq 'ARM aarch64|AArch64'
+          file /tmp/libtestlib.so | grep -Eiq 'shared object'
+
+          # Confirm the required symbol is actually exported and the
+          # binary is a well-formed Android-targeted ELF shared object.
+          "${PREBUILT}/bin/llvm-readobj" --needed-libs --dyn-symbols /tmp/libtestlib.so \
+            | grep -q "Java_com_example_Native_add"
+
+      - name: Native link test using ld.lld directly
+        run: |
+          set -euxo pipefail
+          # Confirms ld.lld itself runs natively and can drive a link,
+          # independent of clang's driver invoking it internally above.
+          "${PREBUILT}/bin/ld.lld" --version
