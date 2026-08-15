@@ -100,6 +100,24 @@ jobs:
             fi
           done
 
+          echo "=== musl/ contents (what is this, and what uses it?) ==="
+          MUSL_DIR="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/musl"
+          if [ -d "${MUSL_DIR}" ]; then
+            find "${MUSL_DIR}" -maxdepth 2 -type d | sort
+            echo "--- breakdown ---"
+            du -sh "${MUSL_DIR}"/* 2>/dev/null | sort -rh
+            echo "--- sample of what references musl (searched in bin/ scripts, if any) ---"
+            grep -rl "musl" "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin" 2>/dev/null | head -5 || echo "(no text-based references found in bin/)"
+          fi
+
+          echo "=== prebuilt/ contents (top-level, not toolchains/llvm one) ==="
+          PREBUILT_DIR="${NDK_DIR}/prebuilt"
+          if [ -d "${PREBUILT_DIR}" ]; then
+            find "${PREBUILT_DIR}" -maxdepth 3 -type d | sort
+            echo "--- breakdown ---"
+            du -sh "${PREBUILT_DIR}"/* 2>/dev/null | sort -rh
+          fi
+
       # - name: Checkout exact r28c Android LLVM sources and patch set
         # run: |
           # set -euxo pipefail
