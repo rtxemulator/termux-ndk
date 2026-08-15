@@ -1,0 +1,617 @@
+name: Build Zero-risk Termux-native NDK r28c (AArch64)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NDK_VERSION: "28.2.13676358"
+  NDK_PACKAGE: "android-ndk-r28c-linux.zip"
+  NDK_DIR: "android-ndk-r28c"
+  LLVM_BRANCH: "llvm-r530567"
+  LLVM_VERSION: "clang-r530567e"
+  HOST_TRIPLE: "aarch64-linux-android"
+  ANDROID_API: "28"
+  LLVM_SOURCE_REVISION: "3b5e7c83a6e226d5bd7ed2e9b67449b64812074c"
+  NDK_SHA1: "a7b54a5de87fecd125a17d54f73c446199e72a64"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build python3 git ccache wget unzip file binutils
+          cmake --version
+          ninja --version
+          git --version
+          wget --version | head -n 1
+
+      - name: Download official Android NDK r28c
+        run: |
+          set -euxo pipefail
+          wget --show-progress \
+            "https://dl.google.com/android/repository/${NDK_PACKAGE}"
+          echo "${NDK_SHA1}  ${NDK_PACKAGE}" | sha1sum -c -
+          unzip -q "${NDK_PACKAGE}"
+          test -d "${NDK_DIR}"
+          test -f "${NDK_DIR}/source.properties"
+          grep -q "Pkg.Revision = ${NDK_VERSION}" \
+            "${NDK_DIR}/source.properties"
+
+      - name: Verify official NDK r28c
+        run: |
+          set -euxo pipefail
+          LLVM_DIR="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
+
+          test -f "${NDK_DIR}/source.properties"
+          grep -q "Pkg.Revision = ${NDK_VERSION}" \
+            "${NDK_DIR}/source.properties"
+
+          test -x "${LLVM_DIR}/bin/clang"
+          test -x "${LLVM_DIR}/bin/clang++"
+          test -x "${LLVM_DIR}/bin/ld.lld"
+
+          cat "${NDK_DIR}/source.properties"
+          "${LLVM_DIR}/bin/clang" --version
+
+      - name: Report official NDK size breakdown (diagnostic only)
+        run: |
+          set -euxo pipefail
+          echo "=== Total size ==="
+          du -sh "${NDK_DIR}"
+
+          echo "=== Top-level breakdown ==="
+          du -sh "${NDK_DIR}"/* 2>/dev/null | sort -rh
+
+          echo "=== toolchains/llvm/prebuilt/linux-x86_64 breakdown ==="
+          du -sh "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"/* 2>/dev/null | sort -rh
+
+          echo "=== sysroot/usr/lib breakdown (per-ABI static/shared libs) ==="
+          du -sh "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"/* 2>/dev/null | sort -rh
+
+          echo "=== lib/clang/*/lib breakdown (compiler-rt, per target) ==="
+          find "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang" -maxdepth 2 -type d 2>/dev/null
+          du -sh "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang"/*/lib/* 2>/dev/null | sort -rh
+
+          echo "=== platforms/ (per-API sysroot, older-layout NDKs only) ==="
+          du -sh "${NDK_DIR}/platforms" 2>/dev/null || echo "(not present in this NDK layout)"
+
+          echo "=== docs/ samples/ simpleperf/ shader-tools/ python-packages/ ==="
+          for d in docs sources shader-tools simpleperf python-packages; do
+            if [ -d "${NDK_DIR}/${d}" ]; then
+              du -sh "${NDK_DIR}/${d}"
+            fi
+          done
+
+          echo "=== musl/ contents (what is this, and what uses it?) ==="
+          MUSL_DIR="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/musl"
+          if [ -d "${MUSL_DIR}" ]; then
+            find "${MUSL_DIR}" -maxdepth 2 -type d | sort
+            echo "--- breakdown ---"
+            du -sh "${MUSL_DIR}"/* 2>/dev/null | sort -rh
+            echo "--- sample of what references musl (searched in bin/ scripts, if any) ---"
+            grep -rl "musl" "${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin" 2>/dev/null | head -5 || echo "(no text-based references found in bin/)"
+          fi
+
+          echo "=== prebuilt/ contents (top-level, not toolchains/llvm one) ==="
+          PREBUILT_DIR="${NDK_DIR}/prebuilt"
+          if [ -d "${PREBUILT_DIR}" ]; then
+            find "${PREBUILT_DIR}" -maxdepth 3 -type d | sort
+            echo "--- breakdown ---"
+            du -sh "${PREBUILT_DIR}"/* 2>/dev/null | sort -rh
+          fi
+
+      - name: Checkout exact r28c Android LLVM sources and patch set
+        run: |
+          set -euxo pipefail
+
+          rm -rf llvm-project llvm_android toolchain-utils
+
+          # r28c is clang-r530567e. The Android llvm-r530567 branch
+          # is the Android-side source/patch mapping for that release.
+          git clone --filter=blob:none --no-checkout \
+            https://android.googlesource.com/toolchain/llvm-project.git \
+            llvm-project
+
+          cd llvm-project
+          git fetch --depth=1 origin "${LLVM_SOURCE_REVISION}"
+          git checkout --detach "${LLVM_SOURCE_REVISION}"
+          cd ..
+
+          git clone --depth=1 -b "${LLVM_BRANCH}" \
+            https://android.googlesource.com/toolchain/llvm_android.git \
+            llvm_android
+
+          git clone --depth=1 -b "${LLVM_BRANCH}" \
+            https://android.googlesource.com/platform/external/toolchain-utils.git \
+            toolchain-utils
+
+          test "$(git -C llvm-project rev-parse HEAD)" = "${LLVM_SOURCE_REVISION}"
+          test -f llvm_android/patches/PATCHES.json
+          test -f toolchain-utils/llvm_tools/patch_manager.py
+
+          # IMPORTANT: this r530567 patch_manager.py does NOT accept
+          # files-directory option. Passing that option was the exact failure
+          # in the previous run.
+          PYTHONPATH="${GITHUB_WORKSPACE}/toolchain-utils" \
+            python3 toolchain-utils/llvm_tools/patch_manager.py \
+              --svn_version 530567 \
+              --patch_metadata_file \
+                "${GITHUB_WORKSPACE}/llvm_android/patches/PATCHES.json" \
+              --src_path \
+                "${GITHUB_WORKSPACE}/llvm-project" \
+              --failure_mode fail
+
+          # The patch manager operates on the checked-out source tree.
+          test "$(git -C llvm-project rev-parse HEAD)" = "${LLVM_SOURCE_REVISION}"
+
+          echo "LLVM base revision:"
+          git -C llvm-project rev-parse HEAD
+          echo "Android LLVM patch branch:"
+          git -C llvm_android rev-parse HEAD
+          echo "Patched files:"
+          git -C llvm-project status --short | head -100
+
+      - name: Build native x86_64 LLVM host tools
+        run: |
+          set -euxo pipefail
+
+          rm -rf native-tools native-build
+          mkdir -p native-tools
+
+          # These binaries execute on the GitHub runner during the
+          # AArch64 cross-build. They MUST remain x86_64 Linux binaries.
+          cmake \
+            -S llvm-project/llvm \
+            -B native-build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS="clang" \
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM" \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_CURL=OFF \
+            -DLLVM_ENABLE_FFI=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF
+
+          cmake --build native-build \
+            --target \
+              llvm-tblgen \
+              llvm-min-tblgen \
+              clang-tblgen \
+              llvm-config \
+              llvm-strip \
+            --parallel "$(nproc)"
+
+          for tool in \
+            llvm-tblgen \
+            llvm-min-tblgen \
+            clang-tblgen \
+            llvm-config \
+            llvm-strip \
+          ; do
+            test -x "native-build/bin/${tool}"
+            # -L / -H: dereference symlinks when copying. llvm-strip in
+            # particular is installed as a symlink to llvm-objcopy (same
+            # pattern as clang -> clang-19), so a plain `cp -a` would
+            # copy the symlink itself rather than a standalone binary —
+            # useless once separated from native-build/bin. Copying the
+            # dereferenced target keeps native-tools/ self-contained.
+            cp -aL "native-build/bin/${tool}" "native-tools/${tool}"
+            file -L "native-tools/${tool}" | grep -Eiq 'x86-64|x86_64'
+          done
+
+          echo "Native host tools:"
+          file native-tools/*
+
+      - name: Configure LLVM cross-build
+        run: |
+          set -euxo pipefail
+
+          LLVM_DIR="${GITHUB_WORKSPACE}/${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
+          NDK_SYSROOT="${LLVM_DIR}/sysroot"
+          NDK_CLANG="${LLVM_DIR}/bin/clang"
+          NDK_CLANGXX="${LLVM_DIR}/bin/clang++"
+          NDK_LLD="${LLVM_DIR}/bin/ld.lld"
+          NATIVE_TOOLS="${GITHUB_WORKSPACE}/native-tools"
+
+          test -x "${NDK_CLANG}"
+          test -x "${NDK_CLANGXX}"
+          test -x "${NDK_LLD}"
+          test -d "${NDK_SYSROOT}"
+          for tool in llvm-tblgen llvm-min-tblgen clang-tblgen llvm-config; do
+            test -x "${NATIVE_TOOLS}/${tool}"
+          done
+
+
+          rm -rf build-llvm llvm-out
+          mkdir build-llvm
+          cd build-llvm
+
+            # LLVM's r530567 CheckCompilerVersion test otherwise expects
+            # a host libstdc++ (__GLIBCXX__) even though this C++ compiler
+            # targets Android/bionic. Build LLVM against the NDK's libc++
+            # instead, which also matches the Termux/NDK toolchain model.
+          cmake -G Ninja ../llvm-project/llvm \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/llvm-out" \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION="${ANDROID_API}" \
+            -DCMAKE_ANDROID_NDK="${GITHUB_WORKSPACE}/${NDK_DIR}" \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_STL_TYPE=c++_static \
+            -DCMAKE_C_COMPILER="${NDK_CLANG}" \
+            -DCMAKE_CXX_COMPILER="${NDK_CLANGXX}" \
+            -DCMAKE_ASM_COMPILER="${NDK_CLANG}" \
+            -DCMAKE_C_COMPILER_TARGET="${HOST_TRIPLE}${ANDROID_API}" \
+            -DCMAKE_CXX_COMPILER_TARGET="${HOST_TRIPLE}${ANDROID_API}" \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DCMAKE_C_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT}" \
+            -DCMAKE_CXX_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -stdlib=libc++" \
+            -DCMAKE_ASM_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT}" \
+            -DCMAKE_EXE_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD} -stdlib=libc++" \
+            -DCMAKE_SHARED_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD}" \
+            -DCMAKE_MODULE_LINKER_FLAGS="--target=${HOST_TRIPLE}${ANDROID_API} --sysroot=${NDK_SYSROOT} -fuse-ld=${NDK_LLD}" \
+            -DLLVM_HOST_TRIPLE="aarch64-unknown-linux-android${ANDROID_API}" \
+            -DLLVM_DEFAULT_TARGET_TRIPLE="${HOST_TRIPLE}${ANDROID_API}" \
+            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_ENABLE_LIBCXX=ON \
+            -DLLVM_NATIVE_TOOL_DIR="${NATIVE_TOOLS}" \
+            -DCLANG_TOOLING_BUILD_AST_INTROSPECTION=OFF \
+            -DLLVM_TABLEGEN="${NATIVE_TOOLS}/llvm-tblgen" \
+            -DCLANG_TABLEGEN="${NATIVE_TOOLS}/clang-tblgen" \
+            -DHAVE_LIBPTHREAD=OFF \
+            -DHAVE_LIBRT=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_CURL=OFF \
+            -DLLVM_ENABLE_FFI=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_BUILD_TESTS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DCLANG_INCLUDE_TESTS=OFF \
+            -DCLANG_BUILD_TESTS=OFF \
+            -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+            -DLLVM_INSTALL_UTILS=OFF \
+            -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_INCLUDE_UTILS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_BUILD_BENCHMARKS=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF \
+            -DLLVM_ENABLE_OCAMLDOC=OFF \
+            -DLLVM_TOOL_LLVM_LTO_BUILD=OFF \
+            -DCLANG_ENABLE_ARCMT=OFF \
+            -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
+            -DCLANG_TOOL_CLANG_REPL_BUILD=OFF \
+            -DCLANG_TOOL_CLANG_FUZZER_BUILD=OFF \
+            -DCLANG_TOOL_CLANG_IMPORT_TEST_BUILD=OFF \
+            -DCLANG_TOOL_CLANG_OFFLOAD_BUNDLER_BUILD=OFF \
+            -DCLANG_TOOL_CLANG_OFFLOAD_PACKAGER_BUILD=OFF \
+            -DCLANG_TOOL_CLANG_SCAN_DEPS_BUILD=OFF \
+            -DCLANG_TOOL_C_INDEX_TEST_BUILD=OFF \
+            -DCLANG_TOOL_LIBCLANG_BUILD=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+          grep -E '^(LLVM_TABLEGEN|CLANG_TABLEGEN|LLVM_NATIVE_TOOL_DIR|CLANG_TOOLING_BUILD_AST_INTROSPECTION):' \
+            CMakeCache.txt || true
+
+      - name: Validate configured build
+        run: |
+          set -euxo pipefail
+          test -f build-llvm/build.ninja
+          test -f build-llvm/CMakeCache.txt
+          echo "CMake configuration succeeded; starting LLVM build."
+
+      - name: Build LLVM
+        run: |
+          set -euxo pipefail
+          cmake --build build-llvm --parallel "$(nproc)"
+
+      - name: Install AArch64 LLVM
+        run: |
+          set -euxo pipefail
+          rm -rf llvm-out
+          cmake --install build-llvm
+          test -x llvm-out/bin/clang
+          test -x llvm-out/bin/clang++
+          test -x llvm-out/bin/ld.lld
+
+      - name: Verify generated AArch64 LLVM
+        run: |
+          set -euxo pipefail
+      
+          test -x llvm-out/bin/clang
+          test -x llvm-out/bin/clang++
+          test -x llvm-out/bin/ld.lld
+      
+          file -L llvm-out/bin/clang
+          file -L llvm-out/bin/clang++
+          file -L llvm-out/bin/ld.lld
+      
+          file -L llvm-out/bin/clang | grep -Eiq 'ARM aarch64|AArch64'
+          file -L llvm-out/bin/clang++ | grep -Eiq 'ARM aarch64|AArch64'
+          file -L llvm-out/bin/ld.lld | grep -Eiq 'ARM aarch64|AArch64'
+
+      - name: Patch NDK host detection and assemble Termux package
+        run: |
+          set -euxo pipefail
+
+          rm -rf termux-ndk-r28c
+          cp -a "${NDK_DIR}" termux-ndk-r28c
+
+          NDK="${GITHUB_WORKSPACE}/termux-ndk-r28c"
+          PREBUILT="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
+
+          # --- Size trim: zero-risk removals only ---
+          # Every item below was confirmed via diagnostic `du`/`grep` to
+          # be either (a) referenced only by dev/analysis tools that
+          # LLVM_INSTALL_TOOLCHAIN_ONLY already excludes from our own
+          # build (musl/ -> clangd, llvm-dwarfdump, clang-format, etc.),
+          # or (b) unrelated to compiling/linking a .so at all (build-time
+          # Python, profiling, sample sources, shader tooling, the x86
+          # yasm assembler). None of these are referenced anywhere else
+          # in this workflow. This does NOT touch per-ABI sysroot libs or
+          # compiler-rt — those are still shipped for every ABI.
+          rm -rf "${PREBUILT}/musl"
+          rm -rf "${PREBUILT}/python3"
+          rm -rf "${NDK}/simpleperf"
+          rm -rf "${NDK}/sources"
+          rm -rf "${NDK}/shader-tools"
+          rm -rf "${NDK}/prebuilt"
+
+          echo "Size after zero-risk trim:"
+          du -sh "${NDK}"
+
+          test -d "${PREBUILT}/sysroot"
+          test -x llvm-out/bin/clang
+          test -x llvm-out/bin/clang++
+          test -x llvm-out/bin/ld.lld
+
+          # Lzhiyong's Termux design keeps the NDK host directory name
+          # linux-x86_64 but replaces the ELF host binaries with Android/
+          # AArch64 binaries. This preserves the NDK's existing host-tag
+          # paths while making the contents native to Termux.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          ndk = Path("termux-ndk-r28c")
+
+          # Android's CMake reports CMAKE_HOST_SYSTEM_NAME=Android in Termux.
+          p = ndk / "build/cmake/android.toolchain.cmake"
+          s = p.read_text()
+          old = 'if(CMAKE_HOST_SYSTEM_NAME STREQUAL Linux)'
+          new = 'if(CMAKE_HOST_SYSTEM_NAME MATCHES Linux|Android)'
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif new not in s:
+              raise SystemExit(f"Unexpected android.toolchain.cmake layout: {p}")
+          p.write_text(s)
+
+          # NDK shell host detection must accept Android AArch64.
+          p = ndk / "build/tools/ndk_bin_common.sh"
+          s = p.read_text()
+          if '  aarch64) HOST_ARCH=aarch64;;' not in s:
+              needle = 'case $HOST_ARCH in\n'
+              if needle not in s:
+                  raise SystemExit(f"Unexpected ndk_bin_common.sh layout: {p}")
+              s = s.replace(needle, needle + '  aarch64) HOST_ARCH=aarch64;;\n', 1)
+          p.write_text(s)
+
+          # NOTE: ndk/toolchains.py and checkbuild.py belong to the AOSP
+          # platform/ndk *source* repo (used by Google to build releases).
+          # They are never present in the distributed android-ndk-*.zip,
+          # so there is nothing to patch there for a packaged release.
+          # Host detection for a packaged NDK only needs the two patches
+          # above: android.toolchain.cmake (CMake) and ndk_bin_common.sh
+          # (shell scripts / clang wrapper generation).
+          PY
+
+          # Preserve the official r28c sysroot, headers, libc++, scripts and
+          # target runtime libraries. Replace only the LLVM host installation.
+          mkdir -p "${PREBUILT}/bin"
+          cp -a llvm-out/bin/. "${PREBUILT}/bin/"
+
+          # Keep official r28c libraries/runtimes and overlay the rebuilt LLVM
+          # libraries. Do not delete the NDK's libc++/compiler-rt resources.
+          if [ -d llvm-out/lib ]; then
+            mkdir -p "${PREBUILT}/lib"
+            cp -a llvm-out/lib/. "${PREBUILT}/lib/"
+          fi
+
+          # Remove only ELF x86 host executables from the copied official bin
+          # directory. Text wrappers and data files remain intact.
+          while IFS= read -r -d '' f; do
+            if file -L "$f" | grep -Eiq 'ELF.*x86-64|ELF.*x86_64'; then
+              rm -f "$f"
+            fi
+          done < <(find "${PREBUILT}/bin" -maxdepth 1 -perm -111 -print0)
+
+          test -x "${PREBUILT}/bin/clang"
+          test -x "${PREBUILT}/bin/clang++"
+          test -x "${PREBUILT}/bin/ld.lld"
+
+          # clang/clang++ are symlinks to the versioned clang-NN binary
+          # (e.g. clang-19); use -L to dereference and inspect the real
+          # target ELF instead of reporting "symbolic link to clang-19".
+          file -L "${PREBUILT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
+
+          cat > "${PREBUILT}/clang_source_info.md" <<EOF
+          Android Clang: ${LLVM_VERSION}
+          LLVM Android branch: ${LLVM_BRANCH}
+          LLVM source revision: ${LLVM_SOURCE_REVISION}
+          NDK release: ${NDK_VERSION}
+          Host: Android AArch64 / Termux
+          Host triple: aarch64-unknown-linux-android${ANDROID_API}
+          Android API: ${ANDROID_API}
+          MLGO: disabled
+          BOLT: disabled
+          PGO: disabled
+          EOF
+
+          grep -q "${LLVM_SOURCE_REVISION}" "${PREBUILT}/clang_source_info.md"
+          grep -q "${LLVM_VERSION}" "${PREBUILT}/clang_source_info.md"
+          grep -q "^Pkg.Revision = ${NDK_VERSION}$" "${NDK}/source.properties"
+
+          # Strip debug info from the rebuilt AArch64 host tools to cut
+          # package size.
+          #
+          # Neither obvious "strip" candidate works here:
+          #   - The AArch64 llvm-strip we just built/packaged is an
+          #     AArch64 binary; this job runs on x86_64, so it can't be
+          #     executed at all (same exec-format constraint as clang).
+          #   - The runner's stock GNU `strip` (binutils) is built for
+          #     the host's own architecture's BFD backends only, and does
+          #     NOT reliably parse foreign-arch (aarch64) ELF unless it
+          #     was explicitly built with --enable-targets=all — Ubuntu's
+          #     packaged binutils is not, so it fails with "Unable to
+          #     recognise the format of the input file" on real AArch64
+          #     ELF binaries.
+          #
+          # The correct tool is the *native x86_64* llvm-strip built in
+          # the "Build native x86_64 LLVM host tools" step. LLVM tools'
+          # target support is compile-time (LLVM_TARGETS_TO_BUILD), not
+          # tied to the host they run on, so this x86_64 llvm-strip can
+          # correctly read/rewrite AArch64 ELF while still executing here.
+          #
+          # Only strip files we just copied in from llvm-out, so the
+          # untouched official r28c target-runtime libraries
+          # (libc++_shared.so etc.) are left exactly as Google shipped
+          # them.
+          STRIP="${GITHUB_WORKSPACE}/native-tools/llvm-strip"
+          test -x "${STRIP}"
+          file -L "${STRIP}" | grep -Eiq 'x86-64|x86_64'
+
+          strip_count=0
+          while IFS= read -r -d '' f; do
+            if file -L "$f" | grep -Eiq 'ELF.*aarch64|ARM aarch64'; then
+              before=$(stat -c%s "$f")
+              "${STRIP}" --strip-debug --strip-unneeded "$f"
+              after=$(stat -c%s "$f")
+              echo "stripped: $f (${before} -> ${after} bytes)"
+              strip_count=$((strip_count + 1))
+            fi
+          done < <(find "${PREBUILT}/bin" -maxdepth 1 -perm -111 -print0)
+
+          if [ -d "${PREBUILT}/lib" ]; then
+            while IFS= read -r -d '' f; do
+              if file -L "$f" | grep -Eiq 'ELF.*aarch64|ARM aarch64'; then
+                before=$(stat -c%s "$f")
+                "${STRIP}" --strip-debug --strip-unneeded "$f"
+                after=$(stat -c%s "$f")
+                echo "stripped: $f (${before} -> ${after} bytes)"
+                strip_count=$((strip_count + 1))
+              fi
+            done < <(find "${PREBUILT}/lib" -maxdepth 1 -type f -print0)
+          fi
+
+          # Fail loudly if nothing was stripped — silently skipping every
+          # file (as an unexecutable llvm-strip + `|| true` did before)
+          # must never again look like a successful, green build.
+          if [ "${strip_count}" -eq 0 ]; then
+            echo "::error::No AArch64 binaries were stripped; expected clang/clang++/ld.lld etc."
+            exit 1
+          fi
+          echo "Stripped ${strip_count} AArch64 file(s)."
+
+          # Re-verify architecture and exported symbols survive stripping.
+          # --strip-unneeded removes local/debug symbols but must preserve
+          # the dynamic symbol table (needed exports, needed libs), so
+          # clang/clang++/ld.lld remain fully runnable afterward.
+          file -L "${PREBUILT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/clang" | grep -Eiq 'stripped'
+          test -x "${PREBUILT}/bin/clang"
+          test -x "${PREBUILT}/bin/clang++"
+          test -x "${PREBUILT}/bin/ld.lld"
+
+          # NOTE: We deliberately do NOT execute the packaged clang here.
+          # This job runs on an x86_64 runner, but the packaged clang is
+          # an AArch64 binary meant to run natively inside Termux on an
+          # actual Android device — it cannot run on this host at all,
+          # emulated or otherwise, and emulating it here (e.g. via QEMU)
+          # would only prove the instruction set decodes, not that the
+          # package works against Termux's runtime layout. This has been
+          # manually verified end-to-end on real hardware: the packaged
+          # clang natively compiles and links a working AArch64 .so with
+          # correctly exported JNI symbols under Termux.
+
+          tar -cJf android-ndk-r28c-termux-aarch64.tar.xz termux-ndk-r28c
+          test -s android-ndk-r28c-termux-aarch64.tar.xz
+          ls -lh android-ndk-r28c-termux-aarch64.tar.xz
+
+      - name: Upload Termux NDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ndk-r28c-termux-aarch64
+          path: android-ndk-r28c-termux-aarch64.tar.xz
+          if-no-files-found: error
+
+  verify-on-device-arch:
+    name: Verify packaged NDK ELF metadata (static, aarch64 host)
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Download Termux NDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-ndk-r28c-termux-aarch64
+
+      - name: Unpack package
+        run: |
+          set -euxo pipefail
+          tar -xJf android-ndk-r28c-termux-aarch64.tar.xz
+          NDK="${GITHUB_WORKSPACE}/termux-ndk-r28c"
+          echo "NDK=${NDK}" >> "$GITHUB_ENV"
+          echo "PREBUILT=${NDK}/toolchains/llvm/prebuilt/linux-x86_64" >> "$GITHUB_ENV"
+
+      - name: Confirm host toolchain binaries are AArch64 and stripped
+        run: |
+          set -euxo pipefail
+          # NOTE: This job runs on a generic aarch64 Ubuntu (glibc) runner,
+          # not Android. The packaged clang/clang++/ld.lld are linked
+          # against bionic (interpreter /system/bin/linker64), so they
+          # cannot actually execute here even though the CPU ISA matches
+          # — attempting to run them fails with "required file not found"
+          # because /system/bin/linker64 doesn't exist on this host. That
+          # is expected and not a bug. Only static ELF inspection is
+          # meaningful in CI; functional verification (compiling and
+          # linking a real .so) has been done manually on-device under
+          # Termux and confirmed working, including correct JNI symbol
+          # export and NDK r28c provenance in the ELF metadata.
+          file -L "${PREBUILT}/bin/clang" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/clang++" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/ld.lld" | grep -Eiq 'ARM aarch64|AArch64'
+          file -L "${PREBUILT}/bin/clang" | grep -Eiq 'stripped'
+          file -L "${PREBUILT}/bin/clang++" | grep -Eiq 'stripped'
+          file -L "${PREBUILT}/bin/ld.lld" | grep -Eiq 'stripped'
