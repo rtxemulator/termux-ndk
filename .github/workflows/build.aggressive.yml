@@ -1,4 +1,4 @@
-name: Build Aggressive Termux-native NDK r28c (AArch64)
+name: Build Termux-native NDK r28c (AArch64)
 
 on:
   workflow_dispatch:
@@ -446,19 +446,50 @@ jobs:
               s = s.replace(needle, needle + '  aarch64) HOST_ARCH=aarch64;;\n', 1)
           p.write_text(s)
 
+          # android-legacy.toolchain.cmake has its own, separate
+          # CMAKE_HOST_SYSTEM_NAME check (distinct from the one in
+          # android.toolchain.cmake patched above) that sets
+          # ANDROID_HOST_TAG. Without this, on-device CMake builds under
+          # Termux (which report CMAKE_HOST_SYSTEM_NAME=Android) never
+          # set ANDROID_HOST_TAG at all, breaking every path lookup that
+          # depends on it. Confirmed and validated on-device.
+          p = ndk / "build/cmake/android-legacy.toolchain.cmake"
+          s = p.read_text()
+          old = 'if(CMAKE_HOST_SYSTEM_NAME STREQUAL Linux)'
+          new = 'if(CMAKE_HOST_SYSTEM_NAME STREQUAL Linux OR CMAKE_HOST_SYSTEM_NAME STREQUAL Android)'
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif new not in s:
+              raise SystemExit(f"Unexpected android-legacy.toolchain.cmake layout: {p}")
+          p.write_text(s)
+
           # NOTE: ndk/toolchains.py and checkbuild.py belong to the AOSP
           # platform/ndk *source* repo (used by Google to build releases).
           # They are never present in the distributed android-ndk-*.zip,
           # so there is nothing to patch there for a packaged release.
-          # Host detection for a packaged NDK only needs the two patches
-          # above: android.toolchain.cmake (CMake) and ndk_bin_common.sh
-          # (shell scripts / clang wrapper generation).
+          # Host detection for a packaged NDK needs all three patches
+          # above: android.toolchain.cmake, android-legacy.toolchain.cmake
+          # (CMake) and ndk_bin_common.sh (shell scripts / clang wrapper
+          # generation).
           PY
+
+          # Some tools (and any script doing its own uname-based host-tag
+          # lookup independent of the CMake variable patched above) look
+          # for a linux-aarch64 sibling directory rather than relying on
+          # ANDROID_HOST_TAG. We ship one payload under linux-x86_64 (see
+          # note above on preserving the NDK's existing host-tag paths),
+          # so linux-aarch64 is a symlink to it. Confirmed and validated
+          # on-device. Deferred until after the AArch64 clang splice
+          # below, so the bin/clang existence check is meaningful.
 
           # Preserve the official r28c sysroot, headers, libc++, scripts and
           # target runtime libraries. Replace only the LLVM host installation.
           mkdir -p "${PREBUILT}/bin"
           cp -a llvm-out/bin/. "${PREBUILT}/bin/"
+
+          ln -sfn linux-x86_64 "$(dirname "${PREBUILT}")/linux-aarch64"
+          test -L "$(dirname "${PREBUILT}")/linux-aarch64"
+          test -x "$(dirname "${PREBUILT}")/linux-aarch64/bin/clang"
 
           # Keep official r28c libraries/runtimes and overlay the rebuilt LLVM
           # libraries. Do not delete the NDK's libc++/compiler-rt resources.
